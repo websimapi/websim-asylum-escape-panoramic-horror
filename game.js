@@ -27,6 +27,9 @@ class AsylumEscapeGame {
             loadingScreen: document.getElementById('loading-screen')
         };
         
+        // Set up object interaction handlers
+        this.setupObjectInteractionHandlers();
+        
         this.setupEventListeners();
     }
     
@@ -48,14 +51,22 @@ class AsylumEscapeGame {
     async loadCurrentRoom() {
         const room = this.gameState.rooms[this.gameState.currentRoom];
         
+        // Show loading indication
+        this.uiElements.loadingScreen.style.display = 'flex';
+        
         // Load the panorama image
         await this.panoramaViewer.loadPanorama(room.panoramaUrl);
         
-        // Add scene objects
-        this.panoramaViewer.clearSceneObjects();
+        // Add manual scene objects
         room.objects.forEach(obj => {
-            this.panoramaViewer.addSceneObject(obj.id, obj.position, obj.icon, obj.scale);
+            // Only add objects that haven't been collected
+            if (!this.gameState.inventory.some(item => item.id === obj.id)) {
+                this.panoramaViewer.addSceneObject(obj.id, obj.position, obj.icon, obj.scale);
+            }
         });
+        
+        // Hide loading screen
+        this.uiElements.loadingScreen.style.display = 'none';
         
         // Check if enemy should appear
         this.checkEnemyAppearance();
@@ -75,21 +86,6 @@ class AsylumEscapeGame {
         this.uiElements.hideBtn.addEventListener('click', () => this.handleHide());
         this.uiElements.inspectBtn.addEventListener('click', () => this.handleInspect());
         this.uiElements.moveBtn.addEventListener('click', () => this.showMoveOptions());
-        
-        // Panorama interaction events
-        this.panoramaViewer.onObjectClick = (objectId) => {
-            this.handleObjectInteraction(objectId);
-        };
-        
-        // Handle object detection in view
-        this.panoramaViewer.onObjectInView = (objectId) => {
-            const room = this.gameState.rooms[this.gameState.currentRoom];
-            const object = room.objects.find(obj => obj.id === objectId);
-            if (object && !object.seen) {
-                object.seen = true;
-                this.showMessage(`You notice ${object.name}`);
-            }
-        };
     }
     
     handleHide() {
@@ -325,6 +321,59 @@ class AsylumEscapeGame {
         await this.loadCurrentRoom();
     }
     
+    setupObjectInteractionHandlers() {
+        // Update the panorama object click handler
+        this.panoramaViewer.onObjectClick = (objectId) => {
+            this.handleObjectInteraction(objectId);
+        };
+        
+        // Create the outliner for hover effects
+        this.panoramaViewer.createOutliner();
+    }
+    
+    handleObjectInteraction(objectId) {
+        const room = this.gameState.rooms[this.gameState.currentRoom];
+        
+        // First check if it's a manually created object
+        let object = room.objects.find(obj => obj.id === objectId);
+        
+        // If not found, it might be a detected object
+        if (!object && this.panoramaViewer.sceneObjects.has(objectId)) {
+            const sceneObj = this.panoramaViewer.sceneObjects.get(objectId);
+            if (sceneObj && sceneObj.userData && sceneObj.userData.detectedObject) {
+                const detectedObj = sceneObj.userData.detectedObject;
+                
+                // Create a game object from the detected object
+                object = {
+                    id: objectId,
+                    name: detectedObj.name,
+                    description: detectedObj.description,
+                    collectible: detectedObj.collectible,
+                    // Add to room objects so it persists
+                    seen: true
+                };
+                
+                // Add to room objects if not already there
+                if (!room.objects.some(o => o.id === objectId)) {
+                    room.objects.push(object);
+                }
+            }
+        }
+        
+        if (object) {
+            this.showInteractionMenu([
+                {
+                    text: `Examine ${object.name}`,
+                    action: () => this.examineObject(object.id)
+                },
+                ...(object.collectible ? [{
+                    text: `Take ${object.name}`,
+                    action: () => this.collectItem(object)
+                }] : [])
+            ], `What would you like to do with ${object.name}?`);
+        }
+    }
+    
     showInteractionMenu(options, title = null) {
         const menu = this.uiElements.interactionMenu;
         menu.innerHTML = '';
@@ -463,4 +512,3 @@ window.addEventListener('DOMContentLoaded', () => {
     const game = new AsylumEscapeGame();
     game.init();
 });
-

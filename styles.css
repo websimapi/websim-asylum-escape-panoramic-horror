@@ -206,8 +206,28 @@ body {
     transition: transform 0.2s;
 }
 
-.scene-object:hover {
+.scene-object:hover,
+.scene-object.hovered {
     transform: scale(1.1);
+    filter: drop-shadow(0 0 8px rgba(255, 0, 0, 0.8));
+}
+
+.scene-object.hovered::after {
+    content: '';
+    position: absolute;
+    top: -5px;
+    left: -5px;
+    right: -5px;
+    bottom: -5px;
+    border: 2px solid var(--blood-red);
+    border-radius: 50%;
+    animation: pulse 1.5s infinite alternate;
+    pointer-events: none;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.5; }
+    100% { opacity: 1; }
 }
 
 .visually-hidden {
@@ -221,4 +241,3 @@ body {
     white-space: nowrap;
     border: 0;
 }
-

@@ -152,8 +152,8 @@ export class RoomGenerator {
         // Create a unique ID for the room if not provided
         const id = roomId === "Starting Room" ? "start" : (roomId || uuidv4());
         
-        // Generate room objects
-        const objects = this.generateRoomObjects(3 + Math.floor(Math.random() * 3));
+        // Generate room objects - these will be supplemented by detected objects
+        const objects = this.generateRoomObjects(2 + Math.floor(Math.random() * 2));
         
         // Generate hiding spots
         const hidingSpots = this.generateHidingSpots(1 + Math.floor(Math.random() * 2));
@@ -261,4 +261,3 @@ export class RoomGenerator {
         };
     }
 }
-
