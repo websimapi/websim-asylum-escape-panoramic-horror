@@ -195,6 +195,15 @@ body {
     margin-bottom: 20px;
 }
 
+#object-detection-status .spinner {
+    width: 20px;
+    height: 20px;
+    border: 3px solid var(--asylum-green);
+    border-top: 3px solid var(--blood-red);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
@@ -204,12 +213,14 @@ body {
     position: absolute;
     cursor: pointer;
     transition: transform 0.2s;
+    filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.7));
 }
 
 .scene-object:hover,
 .scene-object.hovered {
-    transform: scale(1.1);
+    transform: scale(1.2);
     filter: drop-shadow(0 0 8px rgba(255, 0, 0, 0.8));
+    z-index: 10;
 }
 
 .scene-object.hovered::after {
@@ -228,6 +239,16 @@ body {
 @keyframes pulse {
     0% { opacity: 0.5; }
     100% { opacity: 1; }
+}
+
+.scene-object.detected {
+    animation: detected-pulse 2s ease-in-out 1;
+}
+
+@keyframes detected-pulse {
+    0% { transform: scale(1); filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.7)); }
+    50% { transform: scale(1.5); filter: drop-shadow(0 0 15px rgba(255, 0, 0, 0.9)); }
+    100% { transform: scale(1); filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.7)); }
 }
 
 .visually-hidden {

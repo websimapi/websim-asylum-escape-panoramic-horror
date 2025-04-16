@@ -347,8 +347,9 @@ class AsylumEscapeGame {
                 object = {
                     id: objectId,
                     name: detectedObj.name,
-                    description: detectedObj.description,
+                    description: detectedObj.description || `A ${detectedObj.name.toLowerCase()} that might be useful.`,
                     collectible: detectedObj.collectible,
+                    icon: sceneObj.element.innerHTML,
                     // Add to room objects so it persists
                     seen: true
                 };
@@ -361,47 +362,83 @@ class AsylumEscapeGame {
         }
         
         if (object) {
-            this.showInteractionMenu([
+            // Create interaction options based on object properties
+            const interactionOptions = [
                 {
                     text: `Examine ${object.name}`,
                     action: () => this.examineObject(object.id)
-                },
-                ...(object.collectible ? [{
+                }
+            ];
+            
+            // Add take option for collectible items
+            if (object.collectible) {
+                interactionOptions.push({
                     text: `Take ${object.name}`,
-                    action: () => this.collectItem(object)
-                }] : [])
-            ], `What would you like to do with ${object.name}?`);
+                    action: () => {
+                        this.collectItem(object);
+                        // Remove from room and scene
+                        room.objects = room.objects.filter(obj => obj.id !== object.id);
+                        this.panoramaViewer.removeSceneObject(object.id);
+                        this.closeInteractionMenu();
+                    }
+                });
+            }
+            
+            // Add use option for doors or furniture
+            if (object.type === 'door' || object.type === 'furniture') {
+                interactionOptions.push({
+                    text: `Interact with ${object.name}`,
+                    action: () => {
+                        if (object.type === 'door' && !object.locked) {
+                            // Handle door interaction - may lead to new room
+                            this.handleDoorInteraction(object);
+                        } else {
+                            // Generic interaction message
+                            this.showMessage(`You interact with the ${object.name}. ${object.interactionText || ''}`);
+                        }
+                        this.closeInteractionMenu();
+                    }
+                });
+            }
+            
+            this.showInteractionMenu(
+                interactionOptions,
+                `What would you like to do with ${object.name}?`
+            );
         }
     }
     
-    showInteractionMenu(options, title = null) {
-        const menu = this.uiElements.interactionMenu;
-        menu.innerHTML = '';
+    handleDoorInteraction(door) {
+        const room = this.gameState.rooms[this.gameState.currentRoom];
         
-        if (title) {
-            const titleEl = document.createElement('h4');
-            titleEl.textContent = title;
-            menu.appendChild(titleEl);
+        if (door.locked) {
+            // Check if player has a key
+            const key = this.gameState.inventory.find(item => 
+                item.name.toLowerCase().includes('key') || item.id === door.requiresItem);
+                
+            if (key) {
+                this.showMessage(`You use the ${key.name} to unlock the door.`);
+                door.locked = false;
+                setTimeout(() => this.handleDoorInteraction(door), 1500);
+            } else {
+                this.showMessage(`The ${door.name} is locked. You need to find a key.`);
+            }
+            return;
         }
         
-        options.forEach(option => {
-            const button = document.createElement('button');
-            button.className = 'interaction-option';
-            button.textContent = option.text;
-            button.addEventListener('click', option.action);
-            menu.appendChild(button);
-        });
+        // Door is unlocked, create a new connected room
+        if (!door.leadsTo) {
+            // Generate a new room ID if this door doesn't have a destination yet
+            door.leadsTo = `room-${Math.floor(Math.random() * 10000)}`;
+        }
         
-        // Position menu in center of screen
-        menu.style.top = '50%';
-        menu.style.left = '50%';
-        menu.style.transform = 'translate(-50%, -50%)';
+        // Add to connected rooms if not already there
+        if (!room.connectedRooms.includes(door.leadsTo)) {
+            room.connectedRooms.push(door.leadsTo);
+        }
         
-        menu.classList.remove('hidden');
-    }
-    
-    closeInteractionMenu() {
-        this.uiElements.interactionMenu.classList.add('hidden');
+        this.showMessage(`You open the ${door.name}...`);
+        setTimeout(() => this.moveToRoom(door.leadsTo), 1000);
     }
     
     checkEnemyAppearance() {
@@ -504,6 +541,36 @@ class AsylumEscapeGame {
                 location.reload(); // Restart the game
             }, 7000);
         }, 2000);
+    }
+    
+    showInteractionMenu(options, title = null) {
+        const menu = this.uiElements.interactionMenu;
+        menu.innerHTML = '';
+        
+        if (title) {
+            const titleEl = document.createElement('h4');
+            titleEl.textContent = title;
+            menu.appendChild(titleEl);
+        }
+        
+        options.forEach(option => {
+            const button = document.createElement('button');
+            button.className = 'interaction-option';
+            button.textContent = option.text;
+            button.addEventListener('click', option.action);
+            menu.appendChild(button);
+        });
+        
+        // Position menu in center of screen
+        menu.style.top = '50%';
+        menu.style.left = '50%';
+        menu.style.transform = 'translate(-50%, -50%)';
+        
+        menu.classList.remove('hidden');
+    }
+    
+    closeInteractionMenu() {
+        this.uiElements.interactionMenu.classList.add('hidden');
     }
 }
 

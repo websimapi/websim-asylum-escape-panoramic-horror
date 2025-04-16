@@ -24,6 +24,11 @@ export class PanoramaViewer {
         this.mouse = new THREE.Vector2();
         this.hoveredObject = null;
         
+        // Add new properties for improved object detection
+        this.objectDetectionInProgress = false;
+        this.objectDetectionRetries = 0;
+        this.fallbackObjectsGenerated = false;
+        
         this.init();
     }
     
@@ -85,7 +90,15 @@ export class PanoramaViewer {
         this.applyPanoramaEffect('initial');
         
         // After loading the panorama, analyze the image for objects
-        await this.detectObjectsInPanorama(imageUrl);
+        this.objectDetectionInProgress = true;
+        try {
+            await this.detectObjectsInPanorama(imageUrl);
+        } catch (error) {
+            console.error("Error in primary object detection, falling back to alternatives:", error);
+            await this.fallbackObjectDetection(imageUrl);
+        } finally {
+            this.objectDetectionInProgress = false;
+        }
     }
     
     loadTexture(url) {
@@ -330,23 +343,29 @@ export class PanoramaViewer {
     
     async detectObjectsInPanorama(imageUrl) {
         try {
+            // Show user that object detection is happening
+            this.showObjectDetectionStatus(true, "Analyzing scene for objects...");
+            
             // Use the AI to analyze the image and detect objects
             const completion = await websim.chat.completions.create({
                 messages: [
                     {
                         role: "system",
                         content: `Analyze this panoramic horror scene image and identify interactive objects.
+                        Focus on clear items that a player could reasonably interact with in a horror game.
+                        For each object, provide accurate coordinates within the image.
                         Respond directly with JSON, following this JSON schema, and no other text.
                         {
                           "objects": [
                             {
                               "name": string,
-                              "type": string, // "furniture", "item", "door", "person", etc.
+                              "type": string, // "furniture", "item", "door", "person", "medical_equipment", "note", "key", etc.
                               "description": string,
                               "collectible": boolean,
+                              "interactive": boolean,
                               "bounding_box": {
-                                "x": number, // 0-1 representing horizontal position in image
-                                "y": number, // 0-1 representing vertical position in image
+                                "x": number, // 0-1 representing horizontal position in image (left edge)
+                                "y": number, // 0-1 representing vertical position in image (top edge)
                                 "width": number, // 0-1 representing width relative to image
                                 "height": number // 0-1 representing height relative to image
                               }
@@ -359,7 +378,7 @@ export class PanoramaViewer {
                         content: [
                             {
                                 type: "text",
-                                text: "Detect horror-themed objects in this asylum scene:",
+                                text: "Identify interactive objects in this asylum scene. Focus on items like doors, furniture, medical equipment, notes, and other objects that would make sense in a horror game. Be precise with the bounding boxes.",
                             },
                             {
                                 type: "image_url",
@@ -372,19 +391,371 @@ export class PanoramaViewer {
             });
 
             // Parse the detected objects
-            this.detectedObjects = JSON.parse(completion.content).objects;
+            const result = JSON.parse(completion.content);
+            this.detectedObjects = result.objects || [];
             
             // Create interactive elements for each detected object
-            this.addDetectedObjectsToScene();
+            if (this.detectedObjects.length > 0) {
+                this.addDetectedObjectsToScene();
+                console.log(`Successfully detected ${this.detectedObjects.length} objects:`, this.detectedObjects);
+            } else {
+                console.warn("No objects detected by AI, using fallback method");
+                await this.fallbackObjectDetection(imageUrl);
+            }
             
-            console.log("Detected objects:", this.detectedObjects);
+            this.showObjectDetectionStatus(false);
         } catch (error) {
-            console.error("Error in object detection:", error);
+            this.showObjectDetectionStatus(false);
+            console.error("Error in LLM-based object detection:", error);
+            
+            // Retry with a different prompt if we haven't tried too many times
+            if (this.objectDetectionRetries < 2) {
+                this.objectDetectionRetries++;
+                console.log(`Retrying object detection (attempt ${this.objectDetectionRetries})`);
+                await this.retryObjectDetection(imageUrl);
+            } else {
+                // If retries fail, use fallback method
+                await this.fallbackObjectDetection(imageUrl);
+            }
+        }
+    }
+    
+    async retryObjectDetection(imageUrl) {
+        try {
+            // Show retry status
+            this.showObjectDetectionStatus(true, "Retrying scene analysis...");
+            
+            // Use a simpler prompt as a fallback
+            const completion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: `What are 3-6 interesting objects visible in this horror scene? For each object, specify:
+                                1. Object name
+                                2. Whether it could be picked up
+                                3. Approximate location (like "center", "top right", etc.)
+                                4. Brief description
+                                
+                                Format as JSON with this structure:
+                                {
+                                  "objects": [
+                                    {
+                                      "name": string,
+                                      "collectible": boolean,
+                                      "position": string,
+                                      "description": string
+                                    }
+                                  ]
+                                }`,
+                            },
+                            {
+                                type: "image_url",
+                                image_url: { url: imageUrl },
+                            },
+                        ],
+                    },
+                ],
+                json: true,
+            });
+
+            // Parse the simplified detected objects
+            const result = JSON.parse(completion.content);
+            
+            // Convert simplified object format to our standard format
+            this.detectedObjects = (result.objects || []).map(obj => {
+                // Convert position string to approximate coordinates
+                const pos = this.convertPositionStringToCoordinates(obj.position);
+                
+                return {
+                    name: obj.name,
+                    type: obj.collectible ? "item" : "furniture",
+                    description: obj.description,
+                    collectible: !!obj.collectible,
+                    interactive: true,
+                    bounding_box: {
+                        x: pos.x,
+                        y: pos.y,
+                        width: 0.1,  // Default size
+                        height: 0.1
+                    }
+                };
+            });
+            
+            if (this.detectedObjects.length > 0) {
+                this.addDetectedObjectsToScene();
+                console.log(`Successfully detected ${this.detectedObjects.length} objects using retry method`);
+            } else {
+                throw new Error("No objects detected in retry");
+            }
+            
+            this.showObjectDetectionStatus(false);
+        } catch (error) {
+            this.showObjectDetectionStatus(false);
+            console.error("Error in retry object detection:", error);
+            throw error; // Propagate to trigger fallback
+        }
+    }
+    
+    convertPositionStringToCoordinates(positionString) {
+        // Convert string positions like "top left", "center", etc. to coordinates
+        const pos = positionString.toLowerCase();
+        let x = 0.5, y = 0.5;
+        
+        if (pos.includes("left")) x = 0.25;
+        if (pos.includes("right")) x = 0.75;
+        if (pos.includes("top")) y = 0.25;
+        if (pos.includes("bottom")) y = 0.75;
+        if (pos.includes("center")) {
+            if (!pos.includes("top") && !pos.includes("bottom")) y = 0.5;
+            if (!pos.includes("left") && !pos.includes("right")) x = 0.5;
+        }
+        
+        return { x, y };
+    }
+    
+    async fallbackObjectDetection(imageUrl) {
+        if (this.fallbackObjectsGenerated) return;
+        
+        this.showObjectDetectionStatus(true, "Generating scene objects...");
+        
+        try {
+            // Generate basic objects based on room type analysis
+            const roomAnalysis = await this.analyzeRoomType(imageUrl);
+            
+            // Generate appropriate objects for the room type
+            const objectsForRoom = this.generateObjectsForRoomType(roomAnalysis.roomType);
+            this.detectedObjects = objectsForRoom;
+            
+            // Add these objects to the scene
+            this.addDetectedObjectsToScene();
+            this.fallbackObjectsGenerated = true;
+            
+            console.log("Added fallback objects to scene:", objectsForRoom);
+            this.showObjectDetectionStatus(false);
+        } catch (error) {
+            console.error("Error in fallback object detection:", error);
+            
+            // Last resort: add some generic objects
+            this.addGenericObjects();
+            this.fallbackObjectsGenerated = true;
+            this.showObjectDetectionStatus(false);
+        }
+    }
+    
+    async analyzeRoomType(imageUrl) {
+        try {
+            // Use a simple prompt to just determine the room type
+            const completion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "user",
+                        content: [
+                            {
+                                type: "text",
+                                text: `What type of room is shown in this asylum horror scene? Reply with JSON only:
+                                {
+                                  "roomType": string, // e.g., "patient_room", "hallway", "operating_room", "morgue", "office"
+                                  "description": string,
+                                  "mood": string // e.g., "dark", "eerie", "blood-stained", "desolate"
+                                }`,
+                            },
+                            {
+                                type: "image_url",
+                                image_url: { url: imageUrl },
+                            },
+                        ],
+                    },
+                ],
+                json: true
+            });
+
+            return JSON.parse(completion.content);
+        } catch (error) {
+            console.error("Error analyzing room type:", error);
+            return { roomType: "unknown", description: "A mysterious room", mood: "dark" };
+        }
+    }
+    
+    generateObjectsForRoomType(roomType) {
+        // Default positions for a 3x3 grid of objects
+        const positions = [
+            {x: 0.2, y: 0.2}, {x: 0.5, y: 0.2}, {x: 0.8, y: 0.2},
+            {x: 0.2, y: 0.5}, {x: 0.5, y: 0.5}, {x: 0.8, y: 0.5},
+            {x: 0.2, y: 0.8}, {x: 0.5, y: 0.8}, {x: 0.8, y: 0.8}
+        ];
+        
+        // Objects based on room type
+        let roomObjects = [];
+        
+        switch(roomType.toLowerCase()) {
+            case 'patient_room':
+                roomObjects = [
+                    { name: "Hospital Bed", type: "furniture", collectible: false, interactive: true,
+                      description: "A rusted metal bed with leather restraints. Dark stains cover the mattress." },
+                    { name: "Medicine Cabinet", type: "furniture", collectible: false, interactive: true,
+                      description: "A small cabinet with a broken door. Some pill bottles are still inside." },
+                    { name: "Patient File", type: "item", collectible: true, interactive: true,
+                      description: "Medical records detailing disturbing experiments performed on patients." },
+                    { name: "Straitjacket", type: "item", collectible: true, interactive: true,
+                      description: "A tattered straitjacket with broken buckles." }
+                ];
+                break;
+            case 'hallway':
+                roomObjects = [
+                    { name: "Wheelchair", type: "furniture", collectible: false, interactive: true,
+                      description: "An old wheelchair with one wheel missing. Dark stains cover the seat." },
+                    { name: "Exit Sign", type: "furniture", collectible: false, interactive: true,
+                      description: "A flickering exit sign pointing down the hallway." },
+                    { name: "Dropped Key", type: "item", collectible: true, interactive: true,
+                      description: "A brass key that might unlock an important door." },
+                    { name: "Maintenance Door", type: "door", collectible: false, interactive: true,
+                      description: "A metal door marked 'Maintenance'. It might lead to an escape route." }
+                ];
+                break;
+            case 'operating_room':
+                roomObjects = [
+                    { name: "Operating Table", type: "furniture", collectible: false, interactive: true,
+                      description: "A blood-stained operating table with leather restraints." },
+                    { name: "Surgical Tools", type: "item", collectible: true, interactive: true,
+                      description: "A set of rusty surgical tools. The scalpel looks particularly sharp." },
+                    { name: "Anesthesia Machine", type: "medical_equipment", collectible: false, interactive: true,
+                      description: "An old anesthesia machine. The gas tank shows it's nearly empty." },
+                    { name: "Doctor's Notes", type: "item", collectible: true, interactive: true,
+                      description: "Notes detailing unethical surgical procedures performed on unwilling patients." }
+                ];
+                break;
+            case 'morgue':
+                roomObjects = [
+                    { name: "Body Drawer", type: "furniture", collectible: false, interactive: true,
+                      description: "A metal drawer used for storing bodies. It's partially open." },
+                    { name: "Autopsy Tools", type: "item", collectible: true, interactive: true,
+                      description: "Tools used for postmortem examinations. The bone saw looks useful." },
+                    { name: "Morgue Log", type: "item", collectible: true, interactive: true,
+                      description: "A log book recording deaths. Many entries are marked 'experiment failure'." },
+                    { name: "Formaldehyde Container", type: "item", collectible: false, interactive: true,
+                      description: "A large container of formaldehyde used for preserving specimens." }
+                ];
+                break;
+            case 'office':
+                roomObjects = [
+                    { name: "Filing Cabinet", type: "furniture", collectible: false, interactive: true,
+                      description: "A metal filing cabinet with patient records. Most drawers are locked." },
+                    { name: "Doctor's Journal", type: "item", collectible: true, interactive: true,
+                      description: "A personal journal detailing the doctor's descent into madness and unethical experiments." },
+                    { name: "Asylum Map", type: "item", collectible: true, interactive: true,
+                      description: "A partial map of the asylum showing some possible escape routes." },
+                    { name: "Desk", type: "furniture", collectible: false, interactive: true,
+                      description: "An old wooden desk with multiple drawers. There might be something useful inside." }
+                ];
+                break;
+            default:
+                roomObjects = [
+                    { name: "Strange Device", type: "item", collectible: true, interactive: true,
+                      description: "An unidentifiable device with buttons and dials. Its purpose is unknown." },
+                    { name: "Old Journal", type: "item", collectible: true, interactive: true,
+                      description: "A weathered journal with faded writing. It might contain useful information." },
+                    { name: "Mysterious Door", type: "door", collectible: false, interactive: true,
+                      description: "A heavy door with unusual markings. It appears to be locked." },
+                    { name: "Broken Chair", type: "furniture", collectible: false, interactive: true,
+                      description: "A wooden chair with one leg missing. It looks unstable." }
+                ];
+        }
+        
+        // Assign positions to objects and add bounding boxes
+        return roomObjects.map((obj, index) => {
+            const position = positions[index % positions.length];
+            return {
+                ...obj,
+                bounding_box: {
+                    x: position.x - 0.05,
+                    y: position.y - 0.05,
+                    width: 0.1,
+                    height: 0.1
+                }
+            };
+        });
+    }
+    
+    addGenericObjects() {
+        // Last resort - add some generic objects as a fallback
+        const genericObjects = [
+            {
+                name: "Strange Key",
+                type: "item",
+                description: "An ornate key that seems important.",
+                collectible: true,
+                interactive: true,
+                bounding_box: { x: 0.3, y: 0.4, width: 0.1, height: 0.1 }
+            },
+            {
+                name: "Door",
+                type: "door",
+                description: "A door that might lead somewhere important.",
+                collectible: false,
+                interactive: true,
+                bounding_box: { x: 0.7, y: 0.5, width: 0.15, height: 0.3 }
+            },
+            {
+                name: "Old Document",
+                type: "item",
+                description: "A document with information about the asylum's dark history.",
+                collectible: true,
+                interactive: true,
+                bounding_box: { x: 0.4, y: 0.7, width: 0.1, height: 0.1 }
+            }
+        ];
+        
+        this.detectedObjects = genericObjects;
+        this.addDetectedObjectsToScene();
+    }
+    
+    showObjectDetectionStatus(isActive, message = "Analyzing scene...") {
+        // Create or update status element
+        let statusEl = document.getElementById('object-detection-status');
+        
+        if (isActive) {
+            if (!statusEl) {
+                statusEl = document.createElement('div');
+                statusEl.id = 'object-detection-status';
+                statusEl.style.position = 'absolute';
+                statusEl.style.bottom = '30px';
+                statusEl.style.left = '50%';
+                statusEl.style.transform = 'translateX(-50%)';
+                statusEl.style.backgroundColor = 'rgba(0,0,0,0.7)';
+                statusEl.style.color = '#fff';
+                statusEl.style.padding = '10px 20px';
+                statusEl.style.borderRadius = '5px';
+                statusEl.style.zIndex = '1000';
+                statusEl.style.fontFamily = 'Special Elite, cursive';
+                statusEl.style.display = 'flex';
+                statusEl.style.alignItems = 'center';
+                statusEl.style.gap = '10px';
+                
+                const spinner = document.createElement('div');
+                spinner.className = 'spinner';
+                spinner.style.width = '20px';
+                spinner.style.height = '20px';
+                statusEl.appendChild(spinner);
+                
+                const text = document.createElement('span');
+                text.textContent = message;
+                statusEl.appendChild(text);
+                
+                document.body.appendChild(statusEl);
+            } else {
+                statusEl.querySelector('span').textContent = message;
+                statusEl.style.display = 'flex';
+            }
+        } else if (statusEl) {
+            statusEl.style.display = 'none';
         }
     }
     
     addDetectedObjectsToScene() {
-        // Clear previous objects
+        // Clear previous detected objects but keep manually added ones
         this.detectedObjects.forEach(obj => {
             // Generate a unique ID for each detected object
             const objId = `detected-${obj.name.toLowerCase().replace(/\s/g, '-')}-${Math.random().toString(36).substr(2, 5)}`;
@@ -404,8 +775,18 @@ export class PanoramaViewer {
                 case 'item':
                     iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M14,6L10.25,11L13.1,14.8L11.5,16C9.81,13.75 7,10 7,10L1,18H23L14,6Z" /></svg>`;
                     break;
+                case 'medical_equipment':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#d3d3d3"><path d="M10,21H14V18H15V15H9V18H10V21M12,2C17.5,2 22,6.5 22,12C22,17.5 17.5,22 12,22C6.5,22 2,17.5 2,12C2,6.5 6.5,2 12,2M12,4C7.58,4 4,7.58 4,12C4,16.42 7.58,20 12,20C16.42,20 20,16.42 20,12C20,7.58 16.42,4 12,4M12,6C15.31,6 18,8.69 18,12H6C6,8.69 8.69,6 12,6Z" /></svg>`;
+                    break;
                 case 'person':
                     iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8b0000"><path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" /></svg>`;
+                    break;
+                case 'note':
+                case 'document':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#f5f5dc"><path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z" /></svg>`;
+                    break;
+                case 'key':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M7,14A2,2 0 0,1 5,12A2,2 0 0,1 7,10A2,2 0 0,1 9,12A2,2 0 0,1 7,14M12.65,10C11.83,7.67 9.61,6 7,6A6,6 0 0,0 1,12A6,6 0 0,0 7,18C9.61,18 11.83,16.33 12.65,14H17V18H21V14H23V10H12.65Z" /></svg>`;
                     break;
                 default:
                     iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#c0c0c0"><path d="M12,11.5A2.5,2.5 0 0,1 9.5,9A2.5,2.5 0 0,1 12,6.5A2.5,2.5 0 0,1 14.5,9A2.5,2.5 0 0,1 12,11.5M12,2A7,7 0 0,0 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9A7,7 0 0,0 12,2Z" /></svg>`;
