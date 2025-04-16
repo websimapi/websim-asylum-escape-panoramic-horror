@@ -251,6 +251,23 @@ body {
     100% { transform: scale(1); filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.7)); }
 }
 
+#object-detection-status {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(0,0,0,0.7);
+    color: var(--faded-white);
+    padding: 10px 20px;
+    border-radius: 5px;
+    border: 1px solid var(--blood-red);
+    z-index: 1000;
+    font-family: 'Special Elite', cursive;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .visually-hidden {
     position: absolute;
     width: 1px;
