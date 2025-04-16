@@ -36,40 +36,142 @@ class AsylumEscapeGame {
     async init() {
         this.showMessage("You wake up in a strange room. The air is heavy and stale. You need to find a way to escape this asylum...");
         
-        // Generate starting room
-        this.uiElements.loadingScreen.style.display = 'flex';
-        const startRoom = await this.roomGenerator.generateRoom("Starting Room", "A decrepit admission room with peeling wallpaper and broken furniture. The air feels heavy with dread.");
-        this.uiElements.loadingScreen.style.display = 'none';
-        
-        this.gameState.rooms[startRoom.id] = startRoom;
-        this.gameState.currentRoom = startRoom.id;
-        
-        // Load the panorama for this room
-        await this.loadCurrentRoom();
+        try {
+            // Generate starting room with retry logic
+            this.uiElements.loadingScreen.style.display = 'flex';
+            
+            let startRoom = null;
+            let attempts = 0;
+            const maxAttempts = 3;
+            
+            while (!startRoom && attempts < maxAttempts) {
+                try {
+                    startRoom = await this.roomGenerator.generateRoom("Starting Room", 
+                        "A decrepit admission room with peeling wallpaper and broken furniture. The air feels heavy with dread.");
+                } catch (error) {
+                    console.error(`Error generating starting room (attempt ${attempts + 1}/${maxAttempts}):`, error);
+                    attempts++;
+                    if (attempts >= maxAttempts) {
+                        // Create a basic fallback room if all attempts fail
+                        startRoom = this.createFallbackStartRoom();
+                    } else {
+                        // Wait before retrying
+                        await new Promise(resolve => setTimeout(resolve, 1000 * attempts)); 
+                    }
+                }
+            }
+            
+            this.uiElements.loadingScreen.style.display = 'none';
+            
+            this.gameState.rooms[startRoom.id] = startRoom;
+            this.gameState.currentRoom = startRoom.id;
+            
+            // Load the panorama for this room
+            await this.loadCurrentRoom();
+        } catch (error) {
+            console.error("Critical error during game initialization:", error);
+            this.showMessage("Something went wrong. Please refresh to try again.");
+            this.uiElements.loadingScreen.style.display = 'none';
+        }
+    }
+    
+    createFallbackStartRoom() {
+        // Create a basic room without any API calls
+        return {
+            id: "start",
+            name: "Admission Room",
+            description: "A decrepit admission room with peeling wallpaper and broken furniture. The air feels heavy with dread.",
+            panoramaUrl: "https://placehold.co/1024x576/111/333?text=Admission+Room",
+            objects: [
+                {
+                    id: `key-${uuidv4().slice(0, 4)}`,
+                    name: "Admission Key",
+                    description: "A rusty key with a tag labeled 'Ward A'.",
+                    icon: `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M7,14A2,2 0 0,1 5,12A2,2 0 0,1 7,10A2,2 0 0,1 9,12A2,2 0 0,1 7,14M12.65,10C11.83,7.67 9.61,6 7,6A6,6 0 0,0 1,12A6,6 0 0,0 7,18C9.61,18 11.83,16.33 12.65,14H17V18H21V14H23V10H12.65Z" /></svg>`,
+                    position: { x: 120, y: 45 },
+                    scale: 1,
+                    collectible: true,
+                    seen: false
+                },
+                {
+                    id: `door-${uuidv4().slice(0, 4)}`,
+                    name: "Exit Door",
+                    description: "A heavy door leading deeper into the asylum.",
+                    icon: `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8a6d3b"><path d="M8,3V5H6V3H8M3,3V5H1V3H3M13,3V5H11V3H13M18,3V5H16V3H18M23,3V5H21V3H23M8,8V10H6V8H8M3,8V10H1V8H3M13,8V10H11V8H13M18,8V10H16V8H18M23,8V10H21V8H23M8,13V15H6V13H8M3,13V15H1V13H3M13,13V15H11V13H13M18,13V15H16V13H18M23,13V15H21V13H23M8,18V20H6V18H8M3,18V20H1V18H3M13,18V20H11V18H13M18,18V20H16V18H18M23,18V20H21V18H23Z" /></svg>`,
+                    position: { x: 240, y: 45 },
+                    scale: 1.2,
+                    collectible: false,
+                    seen: false
+                }
+            ],
+            hidingSpots: [
+                {
+                    id: `cabinet-${uuidv4().slice(0, 4)}`,
+                    name: "Filing Cabinet",
+                    description: "A large filing cabinet you could hide inside.",
+                    quality: 0.7
+                }
+            ],
+            connectedRooms: [],
+            enemyFree: true,
+            visited: false
+        };
     }
     
     async loadCurrentRoom() {
         const room = this.gameState.rooms[this.gameState.currentRoom];
         
-        // Show loading indication
-        this.uiElements.loadingScreen.style.display = 'flex';
+        try {
+            // Show loading indication
+            this.uiElements.loadingScreen.style.display = 'flex';
+            
+            // Load the panorama image with error handling
+            await this.loadPanoramaWithRetry(room.panoramaUrl);
+            
+            // Add manual scene objects
+            room.objects.forEach(obj => {
+                // Only add objects that haven't been collected
+                if (!this.gameState.inventory.some(item => item.id === obj.id)) {
+                    this.panoramaViewer.addSceneObject(obj.id, obj.position, obj.icon, obj.scale);
+                }
+            });
+            
+            // Hide loading screen
+            this.uiElements.loadingScreen.style.display = 'none';
+            
+            // Check if enemy should appear
+            this.checkEnemyAppearance();
+        } catch (error) {
+            console.error("Error loading room:", error);
+            this.showMessage("Something seems wrong with this room. The darkness is impenetrable.");
+            this.uiElements.loadingScreen.style.display = 'none';
+        }
+    }
+    
+    async loadPanoramaWithRetry(panoramaUrl) {
+        const maxRetries = 3;
+        let attempts = 0;
+        let lastError = null;
         
-        // Load the panorama image
-        await this.panoramaViewer.loadPanorama(room.panoramaUrl);
-        
-        // Add manual scene objects
-        room.objects.forEach(obj => {
-            // Only add objects that haven't been collected
-            if (!this.gameState.inventory.some(item => item.id === obj.id)) {
-                this.panoramaViewer.addSceneObject(obj.id, obj.position, obj.icon, obj.scale);
+        while (attempts < maxRetries) {
+            try {
+                await this.panoramaViewer.loadPanorama(panoramaUrl);
+                return; // Success
+            } catch (error) {
+                lastError = error;
+                console.error(`Error loading panorama (attempt ${attempts + 1}/${maxRetries}):`, error);
+                attempts++;
+                
+                if (attempts < maxRetries) {
+                    // Wait before retrying with exponential backoff
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempts-1)));
+                }
             }
-        });
+        }
         
-        // Hide loading screen
-        this.uiElements.loadingScreen.style.display = 'none';
-        
-        // Check if enemy should appear
-        this.checkEnemyAppearance();
+        // If we get here, all retries failed
+        console.error("All panorama loading attempts failed", lastError);
+        throw new Error("Failed to load panorama after multiple attempts");
     }
     
     showMessage(text, duration = 5000) {
@@ -378,7 +480,7 @@ class AsylumEscapeGame {
                         this.collectItem(object);
                         // Remove from room and scene
                         room.objects = room.objects.filter(obj => obj.id !== object.id);
-                        this.panoramaViewer.removeSceneObject(object.id);
+                        this.panoramaViewer.removeSceneObject(objectId);
                         this.closeInteractionMenu();
                     }
                 });
@@ -573,6 +675,9 @@ class AsylumEscapeGame {
         this.uiElements.interactionMenu.classList.add('hidden');
     }
 }
+
+// Import UUID for the fallback room function
+import { v4 as uuidv4 } from 'https://jspm.dev/uuid';
 
 // Start the game when the page loads
 window.addEventListener('DOMContentLoaded', () => {

@@ -178,20 +178,59 @@ export class RoomGenerator {
     }
     
     async generatePanoramaImage(prompt) {
-        try {
-            // Generate panoramic horror image
-            const result = await websim.imageGen({
-                prompt: prompt,
-                aspect_ratio: "16:9", // Use wide aspect ratio for better panoramic experience
-                seed: Math.floor(Math.random() * 1000) // Random seed for variety
-            });
-            
-            return result.url;
-        } catch (error) {
-            console.error("Error generating image:", error);
-            // Fallback to a placeholder in case of error
-            return "https://placehold.co/1024x576/111/333?text=Asylum+Room";
+        const maxRetries = 3;
+        let retryCount = 0;
+        let delay = 1000; // Initial delay in ms
+        
+        while (retryCount <= maxRetries) {
+            try {
+                // Generate panoramic horror image
+                const result = await websim.imageGen({
+                    prompt: prompt,
+                    aspect_ratio: "16:9", // Use wide aspect ratio for better panoramic experience
+                    seed: Math.floor(Math.random() * 1000) // Random seed for variety
+                });
+                
+                return result.url;
+            } catch (error) {
+                retryCount++;
+                console.error(`Error generating image (attempt ${retryCount}/${maxRetries}):`, error);
+                
+                if (retryCount >= maxRetries) {
+                    console.error("All image generation attempts failed, using fallback image");
+                    // Return fallback image URL based on prompt content
+                    return this.getFallbackImageUrl(prompt);
+                }
+                
+                // Exponential backoff
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2; // Double the delay for next attempt
+            }
         }
+    }
+    
+    getFallbackImageUrl(prompt) {
+        // Extract room type from prompt to determine fallback
+        const roomTypeKeywords = {
+            "patient room": "https://placehold.co/1024x576/111/333?text=Patient+Room",
+            "morgue": "https://placehold.co/1024x576/111/333?text=Morgue",
+            "operating room": "https://placehold.co/1024x576/111/333?text=Operating+Room",
+            "corridor": "https://placehold.co/1024x576/111/333?text=Asylum+Corridor",
+            "office": "https://placehold.co/1024x576/111/333?text=Admin+Office",
+            "kitchen": "https://placehold.co/1024x576/111/333?text=Asylum+Kitchen",
+            "treatment room": "https://placehold.co/1024x576/111/333?text=Treatment+Room",
+            "common area": "https://placehold.co/1024x576/111/333?text=Common+Area"
+        };
+        
+        // Find which room type is in the prompt
+        for (const [keyword, url] of Object.entries(roomTypeKeywords)) {
+            if (prompt.toLowerCase().includes(keyword.toLowerCase())) {
+                return url;
+            }
+        }
+        
+        // Default fallback if no match is found
+        return "https://placehold.co/1024x576/111/333?text=Asylum+Room";
     }
     
     generateRoomObjects(count) {

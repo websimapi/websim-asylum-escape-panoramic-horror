@@ -29,6 +29,10 @@ export class PanoramaViewer {
         this.objectDetectionRetries = 0;
         this.fallbackObjectsGenerated = false;
         
+        // Add properties for retry logic
+        this.maxRetries = 3;
+        this.retryDelay = 1000; // ms
+        
         this.init();
     }
     
@@ -42,6 +46,7 @@ export class PanoramaViewer {
         this.labelRenderer.setSize(window.innerWidth, window.innerHeight);
         this.labelRenderer.domElement.style.position = 'absolute';
         this.labelRenderer.domElement.style.top = '0';
+        this.labelRenderer.domElement.style.left = '0';
         this.labelRenderer.domElement.style.pointerEvents = 'none';
         this.container.appendChild(this.labelRenderer.domElement);
         
@@ -92,10 +97,12 @@ export class PanoramaViewer {
         // After loading the panorama, analyze the image for objects
         this.objectDetectionInProgress = true;
         try {
-            await this.detectObjectsInPanorama(imageUrl);
-        } catch (error) {
-            console.error("Error in primary object detection, falling back to alternatives:", error);
+            // Skip LLM detection and go straight to grid-based object placement
             await this.fallbackObjectDetection(imageUrl);
+        } catch (error) {
+            console.error("Error in object detection fallback:", error);
+            // Ultimate fallback - add some generic objects in fixed positions
+            this.addGenericObjects();
         } finally {
             this.objectDetectionInProgress = false;
         }
@@ -342,178 +349,26 @@ export class PanoramaViewer {
     }
     
     async detectObjectsInPanorama(imageUrl) {
+        // This method is kept for reference but we'll skip using it due to API errors
         try {
             // Show user that object detection is happening
             this.showObjectDetectionStatus(true, "Analyzing scene for objects...");
             
-            // Use the AI to analyze the image and detect objects
-            const completion = await websim.chat.completions.create({
-                messages: [
-                    {
-                        role: "system",
-                        content: `Analyze this panoramic horror scene image and identify interactive objects.
-                        Focus on clear items that a player could reasonably interact with in a horror game.
-                        For each object, provide accurate coordinates within the image.
-                        Respond directly with JSON, following this JSON schema, and no other text.
-                        {
-                          "objects": [
-                            {
-                              "name": string,
-                              "type": string, // "furniture", "item", "door", "person", "medical_equipment", "note", "key", etc.
-                              "description": string,
-                              "collectible": boolean,
-                              "interactive": boolean,
-                              "bounding_box": {
-                                "x": number, // 0-1 representing horizontal position in image (left edge)
-                                "y": number, // 0-1 representing vertical position in image (top edge)
-                                "width": number, // 0-1 representing width relative to image
-                                "height": number // 0-1 representing height relative to image
-                              }
-                            }
-                          ]
-                        }`
-                    },
-                    {
-                        role: "user",
-                        content: [
-                            {
-                                type: "text",
-                                text: "Identify interactive objects in this asylum scene. Focus on items like doors, furniture, medical equipment, notes, and other objects that would make sense in a horror game. Be precise with the bounding boxes.",
-                            },
-                            {
-                                type: "image_url",
-                                image_url: { url: imageUrl },
-                            },
-                        ],
-                    },
-                ],
-                json: true,
-            });
-
-            // Parse the detected objects
-            const result = JSON.parse(completion.content);
-            this.detectedObjects = result.objects || [];
-            
-            // Create interactive elements for each detected object
-            if (this.detectedObjects.length > 0) {
-                this.addDetectedObjectsToScene();
-                console.log(`Successfully detected ${this.detectedObjects.length} objects:`, this.detectedObjects);
-            } else {
-                console.warn("No objects detected by AI, using fallback method");
-                await this.fallbackObjectDetection(imageUrl);
-            }
+            // Instead of using LLM, go straight to our grid-based detection
+            await this.fallbackObjectDetection(imageUrl);
             
             this.showObjectDetectionStatus(false);
         } catch (error) {
             this.showObjectDetectionStatus(false);
-            console.error("Error in LLM-based object detection:", error);
-            
-            // Retry with a different prompt if we haven't tried too many times
-            if (this.objectDetectionRetries < 2) {
-                this.objectDetectionRetries++;
-                console.log(`Retrying object detection (attempt ${this.objectDetectionRetries})`);
-                await this.retryObjectDetection(imageUrl);
-            } else {
-                // If retries fail, use fallback method
-                await this.fallbackObjectDetection(imageUrl);
-            }
+            console.error("Error in object detection:", error);
+            this.addGenericObjects();
         }
     }
     
     async retryObjectDetection(imageUrl) {
-        try {
-            // Show retry status
-            this.showObjectDetectionStatus(true, "Retrying scene analysis...");
-            
-            // Use a simpler prompt as a fallback
-            const completion = await websim.chat.completions.create({
-                messages: [
-                    {
-                        role: "user",
-                        content: [
-                            {
-                                type: "text",
-                                text: `What are 3-6 interesting objects visible in this horror scene? For each object, specify:
-                                1. Object name
-                                2. Whether it could be picked up
-                                3. Approximate location (like "center", "top right", etc.)
-                                4. Brief description
-                                
-                                Format as JSON with this structure:
-                                {
-                                  "objects": [
-                                    {
-                                      "name": string,
-                                      "collectible": boolean,
-                                      "position": string,
-                                      "description": string
-                                    }
-                                  ]
-                                }`,
-                            },
-                            {
-                                type: "image_url",
-                                image_url: { url: imageUrl },
-                            },
-                        ],
-                    },
-                ],
-                json: true,
-            });
-
-            // Parse the simplified detected objects
-            const result = JSON.parse(completion.content);
-            
-            // Convert simplified object format to our standard format
-            this.detectedObjects = (result.objects || []).map(obj => {
-                // Convert position string to approximate coordinates
-                const pos = this.convertPositionStringToCoordinates(obj.position);
-                
-                return {
-                    name: obj.name,
-                    type: obj.collectible ? "item" : "furniture",
-                    description: obj.description,
-                    collectible: !!obj.collectible,
-                    interactive: true,
-                    bounding_box: {
-                        x: pos.x,
-                        y: pos.y,
-                        width: 0.1,  // Default size
-                        height: 0.1
-                    }
-                };
-            });
-            
-            if (this.detectedObjects.length > 0) {
-                this.addDetectedObjectsToScene();
-                console.log(`Successfully detected ${this.detectedObjects.length} objects using retry method`);
-            } else {
-                throw new Error("No objects detected in retry");
-            }
-            
-            this.showObjectDetectionStatus(false);
-        } catch (error) {
-            this.showObjectDetectionStatus(false);
-            console.error("Error in retry object detection:", error);
-            throw error; // Propagate to trigger fallback
-        }
-    }
-    
-    convertPositionStringToCoordinates(positionString) {
-        // Convert string positions like "top left", "center", etc. to coordinates
-        const pos = positionString.toLowerCase();
-        let x = 0.5, y = 0.5;
-        
-        if (pos.includes("left")) x = 0.25;
-        if (pos.includes("right")) x = 0.75;
-        if (pos.includes("top")) y = 0.25;
-        if (pos.includes("bottom")) y = 0.75;
-        if (pos.includes("center")) {
-            if (!pos.includes("top") && !pos.includes("bottom")) y = 0.5;
-            if (!pos.includes("left") && !pos.includes("right")) x = 0.5;
-        }
-        
-        return { x, y };
+        // This method is kept for reference but not used anymore
+        console.log("Skipping LLM-based retry and using grid-based detection instead");
+        await this.fallbackObjectDetection(imageUrl);
     }
     
     async fallbackObjectDetection(imageUrl) {
@@ -522,18 +377,18 @@ export class PanoramaViewer {
         this.showObjectDetectionStatus(true, "Generating scene objects...");
         
         try {
-            // Generate basic objects based on room type analysis
-            const roomAnalysis = await this.analyzeRoomType(imageUrl);
+            // Use grid-based object generation instead of LLM analysis
+            const roomType = this.determineRoomTypeFromUrl(imageUrl);
             
             // Generate appropriate objects for the room type
-            const objectsForRoom = this.generateObjectsForRoomType(roomAnalysis.roomType);
+            const objectsForRoom = this.generateObjectsForRoomType(roomType);
             this.detectedObjects = objectsForRoom;
             
             // Add these objects to the scene
             this.addDetectedObjectsToScene();
             this.fallbackObjectsGenerated = true;
             
-            console.log("Added fallback objects to scene:", objectsForRoom);
+            console.log("Added grid-based objects to scene:", objectsForRoom);
             this.showObjectDetectionStatus(false);
         } catch (error) {
             console.error("Error in fallback object detection:", error);
@@ -545,49 +400,39 @@ export class PanoramaViewer {
         }
     }
     
-    async analyzeRoomType(imageUrl) {
-        try {
-            // Use a simple prompt to just determine the room type
-            const completion = await websim.chat.completions.create({
-                messages: [
-                    {
-                        role: "user",
-                        content: [
-                            {
-                                type: "text",
-                                text: `What type of room is shown in this asylum horror scene? Reply with JSON only:
-                                {
-                                  "roomType": string, // e.g., "patient_room", "hallway", "operating_room", "morgue", "office"
-                                  "description": string,
-                                  "mood": string // e.g., "dark", "eerie", "blood-stained", "desolate"
-                                }`,
-                            },
-                            {
-                                type: "image_url",
-                                image_url: { url: imageUrl },
-                            },
-                        ],
-                    },
-                ],
-                json: true
-            });
-
-            return JSON.parse(completion.content);
-        } catch (error) {
-            console.error("Error analyzing room type:", error);
-            return { roomType: "unknown", description: "A mysterious room", mood: "dark" };
+    determineRoomTypeFromUrl(imageUrl) {
+        // Simple room type determination based on the URL or a random selection
+        // This is a fallback when we can't use LLM to analyze the image
+        const roomTypes = [
+            "patient_room", "hallway", "operating_room", "morgue", 
+            "office", "kitchen", "bathroom", "treatment_room"
+        ];
+        
+        // If the URL contains hints about room type, use those
+        const url = imageUrl.toLowerCase();
+        for (const type of roomTypes) {
+            if (url.includes(type.replace("_", ""))) {
+                return type;
+            }
         }
+        
+        // Otherwise pick randomly but weighted toward common room types
+        const randomVal = Math.random();
+        if (randomVal < 0.25) return "patient_room";
+        if (randomVal < 0.45) return "hallway";
+        if (randomVal < 0.6) return "operating_room";
+        if (randomVal < 0.75) return "morgue";
+        if (randomVal < 0.85) return "office";
+        if (randomVal < 0.9) return "kitchen";
+        if (randomVal < 0.95) return "bathroom";
+        return "treatment_room";
     }
     
     generateObjectsForRoomType(roomType) {
-        // Default positions for a 3x3 grid of objects
-        const positions = [
-            {x: 0.2, y: 0.2}, {x: 0.5, y: 0.2}, {x: 0.8, y: 0.2},
-            {x: 0.2, y: 0.5}, {x: 0.5, y: 0.5}, {x: 0.8, y: 0.5},
-            {x: 0.2, y: 0.8}, {x: 0.5, y: 0.8}, {x: 0.8, y: 0.8}
-        ];
+        // Create a grid system for object placement (3x3 grid)
+        const gridPositions = this.generateGridPositions(3, 3);
         
-        // Objects based on room type
+        // Objects based on room type - same as before
         let roomObjects = [];
         
         switch(roomType.toLowerCase()) {
@@ -664,9 +509,16 @@ export class PanoramaViewer {
                 ];
         }
         
+        // Shuffle grid positions and assign to objects
+        const shuffledPositions = this.shuffleArray([...gridPositions]);
+        
         // Assign positions to objects and add bounding boxes
         return roomObjects.map((obj, index) => {
-            const position = positions[index % positions.length];
+            // Get a position from our grid, with fallback
+            const position = index < shuffledPositions.length 
+                ? shuffledPositions[index]
+                : this.generateRandomPosition();
+                
             return {
                 ...obj,
                 bounding_box: {
@@ -679,37 +531,206 @@ export class PanoramaViewer {
         });
     }
     
+    generateGridPositions(rows, cols) {
+        // Generate a grid of positions for more natural object placement
+        const positions = [];
+        
+        // Calculate spacing between grid points
+        const rowSpacing = 0.8 / (rows - 1);
+        const colSpacing = 0.8 / (cols - 1);
+        
+        // Start at 0.1 to give a 0.1 margin around the edges (0.1 to 0.9)
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                positions.push({
+                    x: 0.1 + (c * colSpacing),
+                    y: 0.1 + (r * rowSpacing)
+                });
+            }
+        }
+        
+        return positions;
+    }
+    
+    shuffleArray(array) {
+        // Fisher-Yates shuffle algorithm
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    }
+    
+    generateRandomPosition() {
+        const x = Math.random() * 0.8 + 0.1;
+        const y = Math.random() * 0.8 + 0.1;
+        
+        return { x, y };
+    }
+    
     addGenericObjects() {
-        // Last resort - add some generic objects as a fallback
-        const genericObjects = [
+        // Create a grid pattern for objects
+        const gridSize = 4; // 4x4 grid
+        const objects = [];
+        
+        // Object types to cycle through
+        const objectTypes = [
             {
-                name: "Strange Key",
+                name: "Key",
                 type: "item",
-                description: "An ornate key that seems important.",
+                description: "An old key that might unlock something important.",
                 collectible: true,
-                interactive: true,
-                bounding_box: { x: 0.3, y: 0.4, width: 0.1, height: 0.1 }
+                interactive: true
             },
             {
                 name: "Door",
                 type: "door",
-                description: "A door that might lead somewhere important.",
+                description: "A weathered door with peeling paint.",
                 collectible: false,
-                interactive: true,
-                bounding_box: { x: 0.7, y: 0.5, width: 0.15, height: 0.3 }
+                interactive: true
             },
             {
-                name: "Old Document",
+                name: "Medical Tool",
                 type: "item",
-                description: "A document with information about the asylum's dark history.",
+                description: "An unsettling medical instrument with an unknown purpose.",
                 collectible: true,
-                interactive: true,
-                bounding_box: { x: 0.4, y: 0.7, width: 0.1, height: 0.1 }
+                interactive: true
+            },
+            {
+                name: "Patient Record",
+                type: "item",
+                description: "Notes about a patient's treatment. The details are disturbing.",
+                collectible: true,
+                interactive: true
+            },
+            {
+                name: "Cabinet",
+                type: "furniture",
+                description: "A metal cabinet that might contain useful items.",
+                collectible: false,
+                interactive: true
+            },
+            {
+                name: "Wheelchair",
+                type: "furniture",
+                description: "An old wheelchair with restraints attached to the armrests.",
+                collectible: false,
+                interactive: true
+            },
+            {
+                name: "Window",
+                type: "furniture",
+                description: "A barred window. There's no escape this way.",
+                collectible: false,
+                interactive: true
             }
         ];
         
-        this.detectedObjects = genericObjects;
+        // Create a 3x3 grid with random objects
+        const positions = this.generateGridPositions(gridSize, gridSize);
+        const shuffledPositions = this.shuffleArray([...positions]);
+        
+        // Choose 4-7 random positions for objects
+        const numObjects = 4 + Math.floor(Math.random() * 4);
+        const selectedPositions = shuffledPositions.slice(0, numObjects);
+        
+        // Create objects at those positions
+        selectedPositions.forEach((pos, index) => {
+            const objectType = objectTypes[index % objectTypes.length];
+            objects.push({
+                ...objectType,
+                bounding_box: {
+                    x: pos.x - 0.05,
+                    y: pos.y - 0.05,
+                    width: 0.1,
+                    height: 0.1
+                }
+            });
+        });
+        
+        this.detectedObjects = objects;
         this.addDetectedObjectsToScene();
+    }
+    
+    async analyzeRoomType(imageUrl) {
+        // Skip the LLM analysis and use our local determination function
+        const roomType = this.determineRoomTypeFromUrl(imageUrl);
+        
+        return { 
+            roomType: roomType, 
+            description: `An eerie ${roomType.replace('_', ' ')}`, 
+            mood: "dark" 
+        };
+    }
+    
+    addDetectedObjectsToScene() {
+        // Clear previous detected objects but keep manually added ones
+        this.detectedObjects.forEach(obj => {
+            // Generate a unique ID for each detected object
+            const objId = `detected-${obj.name.toLowerCase().replace(/\s/g, '-')}-${Math.random().toString(36).substr(2, 5)}`;
+            
+            // Convert the bounding box to spherical coordinates
+            const position = this.boundingBoxToSphericalCoordinates(obj.bounding_box);
+            
+            // Determine appropriate icon based on object type
+            let iconHtml;
+            switch(obj.type.toLowerCase()) {
+                case 'door':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8a6d3b"><path d="M8,3V5H6V3H8M3,3V5H1V3H3M13,3V5H11V3H13M18,3V5H16V3H18M23,3V5H21V3H23M8,8V10H6V8H8M3,8V10H1V8H3M13,8V10H11V8H13M18,8V10H16V8H18M23,8V10H21V8H23M8,13V15H6V13H8M3,13V15H1V13H3M13,13V15H11V13H13M18,13V15H16V13H18M23,13V15H21V13H23M8,18V20H6V18H8M3,18V20H1V18H3M13,18V20H11V18H13M18,18V20H16V18H18M23,18V20H21V18H23Z" /></svg>`;
+                    break;
+                case 'furniture':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#a0522d"><path d="M5,13L9,17V15H15V17L19,13H5M12,3A2,2 0 0,1 14,5A2,2 0 0,1 12,7A2,2 0 0,1 10,5A2,2 0 0,1 12,3M10.5,8H13.5C14.6,8 15.5,8.9 15.5,10V12H15L12.5,14.5L10,12H8.5V10A1.5,1.5 0 0,1 10,8.5" /></svg>`;
+                    break;
+                case 'item':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M14,6L10.25,11L13.1,14.8L11.5,16C9.81,13.75 7,10 7,10L1,18H23L14,6Z" /></svg>`;
+                    break;
+                case 'medical_equipment':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#d3d3d3"><path d="M10,21H14V18H15V15H9V18H10V21M12,2C17.5,2 22,6.5 22,12C22,17.5 17.5,22 12,22C6.5,22 2,17.5 2,12C2,6.5 6.5,2 12,2M12,4C7.58,4 4,7.58 4,12C4,16.42 7.58,20 12,20C16.42,20 20,16.42 20,12C20,7.58 16.42,4 12,4M12,6C15.31,6 18,8.69 18,12H6C6,8.69 8.69,6 12,6Z" /></svg>`;
+                    break;
+                case 'person':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8b0000"><path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" /></svg>`;
+                    break;
+                case 'note':
+                case 'document':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#f5f5dc"><path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z" /></svg>`;
+                    break;
+                case 'key':
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M14,6L10.25,11L13.1,14.8L11.5,16C9.81,13.75 7,10 7,10L1,18H23L14,6Z" /></svg>`;
+                    break;
+                default:
+                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#c0c0c0"><path d="M12,11.5A2.5,2.5 0 0,1 9.5,9A2.5,2.5 0 0,1 12,6.5A2.5,2.5 0 0,1 14.5,9A2.5,2.5 0 0,1 12,11.5M12,2A7,7 0 0,0 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9A7,7 0 0,0 12,2M12,6C15.31,6 18,8.69 18,12H6C6,8.69 8.69,6 12,6Z" /></svg>`;
+                    break;
+            }
+            
+            // Add the object to the scene
+            this.addSceneObject(objId, position, iconHtml, 1);
+            
+            // Store additional data about the detected object
+            const sceneObj = this.sceneObjects.get(objId);
+            if (sceneObj) {
+                sceneObj.userData = {
+                    detectedObject: obj,
+                    originalPosition: position,
+                    boundingBox: obj.bounding_box
+                };
+            }
+        });
+    }
+    
+    boundingBoxToSphericalCoordinates(boundingBox) {
+        // Convert 2D image coordinates to spherical coordinates for the panorama
+        // Center of the bounding box
+        const centerX = boundingBox.x + boundingBox.width / 2;
+        const centerY = boundingBox.y + boundingBox.height / 2;
+        
+        // Convert to longitude and latitude
+        const longitude = (centerX * 360) - 180; // Convert from 0-1 to -180 to 180 degrees
+        const latitude = 90 - (centerY * 180);   // Convert from 0-1 to 90 to -90 degrees
+        
+        return {
+            x: longitude,
+            y: latitude
+        };
     }
     
     showObjectDetectionStatus(isActive, message = "Analyzing scene...") {
@@ -752,76 +773,6 @@ export class PanoramaViewer {
         } else if (statusEl) {
             statusEl.style.display = 'none';
         }
-    }
-    
-    addDetectedObjectsToScene() {
-        // Clear previous detected objects but keep manually added ones
-        this.detectedObjects.forEach(obj => {
-            // Generate a unique ID for each detected object
-            const objId = `detected-${obj.name.toLowerCase().replace(/\s/g, '-')}-${Math.random().toString(36).substr(2, 5)}`;
-            
-            // Convert the bounding box to spherical coordinates
-            const position = this.boundingBoxToSphericalCoordinates(obj.bounding_box);
-            
-            // Determine appropriate icon based on object type
-            let iconHtml;
-            switch(obj.type.toLowerCase()) {
-                case 'door':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8a6d3b"><path d="M8,3V5H6V3H8M3,3V5H1V3H3M13,3V5H11V3H13M18,3V5H16V3H18M23,3V5H21V3H23M8,8V10H6V8H8M3,8V10H1V8H3M13,8V10H11V8H13M18,8V10H16V8H18M23,8V10H21V8H23M8,13V15H6V13H8M3,13V15H1V13H3M13,13V15H11V13H13M18,13V15H16V13H18M23,13V15H21V13H23M8,18V20H6V18H8M3,18V20H1V18H3M13,18V20H11V18H13M18,18V20H16V18H18M23,18V20H21V18H23Z" /></svg>`;
-                    break;
-                case 'furniture':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#a0522d"><path d="M5,13L9,17V15H15V17L19,13H5M12,3A2,2 0 0,1 14,5A2,2 0 0,1 12,7A2,2 0 0,1 10,5A2,2 0 0,1 12,3M10.5,8H13.5C14.6,8 15.5,8.9 15.5,10V12H15L12.5,14.5L10,12H8.5V10A1.5,1.5 0 0,1 10,8.5" /></svg>`;
-                    break;
-                case 'item':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M14,6L10.25,11L13.1,14.8L11.5,16C9.81,13.75 7,10 7,10L1,18H23L14,6Z" /></svg>`;
-                    break;
-                case 'medical_equipment':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#d3d3d3"><path d="M10,21H14V18H15V15H9V18H10V21M12,2C17.5,2 22,6.5 22,12C22,17.5 17.5,22 12,22C6.5,22 2,17.5 2,12C2,6.5 6.5,2 12,2M12,4C7.58,4 4,7.58 4,12C4,16.42 7.58,20 12,20C16.42,20 20,16.42 20,12C20,7.58 16.42,4 12,4M12,6C15.31,6 18,8.69 18,12H6C6,8.69 8.69,6 12,6Z" /></svg>`;
-                    break;
-                case 'person':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#8b0000"><path d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z" /></svg>`;
-                    break;
-                case 'note':
-                case 'document':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#f5f5dc"><path d="M14,17H7V15H14M17,13H7V11H17M17,9H7V7H17M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z" /></svg>`;
-                    break;
-                case 'key':
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#daa520"><path d="M7,14A2,2 0 0,1 5,12A2,2 0 0,1 7,10A2,2 0 0,1 9,12A2,2 0 0,1 7,14M12.65,10C11.83,7.67 9.61,6 7,6A6,6 0 0,0 1,12A6,6 0 0,0 7,18C9.61,18 11.83,16.33 12.65,14H17V18H21V14H23V10H12.65Z" /></svg>`;
-                    break;
-                default:
-                    iconHtml = `<svg viewBox="0 0 24 24" width="100%" height="100%" fill="#c0c0c0"><path d="M12,11.5A2.5,2.5 0 0,1 9.5,9A2.5,2.5 0 0,1 12,6.5A2.5,2.5 0 0,1 14.5,9A2.5,2.5 0 0,1 12,11.5M12,2A7,7 0 0,0 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9A7,7 0 0,0 12,2Z" /></svg>`;
-                    break;
-            }
-            
-            // Add the object to the scene
-            this.addSceneObject(objId, position, iconHtml, 1);
-            
-            // Store additional data about the detected object
-            const sceneObj = this.sceneObjects.get(objId);
-            if (sceneObj) {
-                sceneObj.userData = {
-                    detectedObject: obj,
-                    originalPosition: position,
-                    boundingBox: obj.bounding_box
-                };
-            }
-        });
-    }
-    
-    boundingBoxToSphericalCoordinates(boundingBox) {
-        // Convert 2D image coordinates to spherical coordinates for the panorama
-        // Center of the bounding box
-        const centerX = boundingBox.x + boundingBox.width / 2;
-        const centerY = boundingBox.y + boundingBox.height / 2;
-        
-        // Convert to longitude and latitude
-        const longitude = (centerX * 360) - 180; // Convert from 0-1 to -180 to 180 degrees
-        const latitude = 90 - (centerY * 180);   // Convert from 0-1 to 90 to -90 degrees
-        
-        return {
-            x: longitude,
-            y: latitude
-        };
     }
     
     createOutliner() {
