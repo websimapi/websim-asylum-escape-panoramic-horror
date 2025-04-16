@@ -227,7 +227,7 @@ export class PanoramaViewer {
                 collectible: true,
                 description: 'An old terminal keyboard. It might access patient records.'
             },
-            cell phone: {
+            "cell phone": {
                 type: 'item',
                 collectible: true,
                 description: 'A communications device. Perhaps it still works?'
